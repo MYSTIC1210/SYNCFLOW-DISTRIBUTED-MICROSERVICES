@@ -1,0 +1,76 @@
+version: "3.9"
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: syncflow
+      POSTGRES_PASSWORD: syncflow
+      POSTGRES_DB: syncflow
+    ports: ["5432:5432"]
+    volumes: [pg_data:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U syncflow"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  rabbitmq:
+    image: rabbitmq:3.13-management-alpine
+    environment:
+      RABBITMQ_DEFAULT_USER: syncflow
+      RABBITMQ_DEFAULT_PASS: syncflow
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "ping"]
+      interval: 10s
+      retries: 10
+
+  jaeger:
+    image: jaegertracing/all-in-one:1.57
+    ports:
+      - "16686:16686"   # UI
+      - "4318:4318"     # OTLP HTTP
+
+  gateway:
+    build: .
+    command: ./syncflow
+    environment:
+      DATABASE_URL: postgres://syncflow:syncflow@postgres:5432/syncflow
+      RABBITMQ_URL: amqp://syncflow:syncflow@rabbitmq:5672/
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4318
+      PORT: "8080"
+    ports: ["8080:8080"]
+    depends_on:
+      postgres:  { condition: service_healthy }
+      rabbitmq:  { condition: service_healthy }
+
+  worker:
+    build: .
+    command: ./syncflow-worker
+    environment:
+      DATABASE_URL: postgres://syncflow:syncflow@postgres:5432/syncflow
+      RABBITMQ_URL: amqp://syncflow:syncflow@rabbitmq:5672/
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4318
+      WORKER_COUNT: "8"
+    depends_on:
+      postgres:  { condition: service_healthy }
+      rabbitmq:  { condition: service_healthy }
+    deploy:
+      replicas: 2   # scale horizontally
+
+  grafana:
+    image: grafana/grafana:10.4.3
+    ports: ["3000:3000"]
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./infra/grafana/provisioning:/etc/grafana/provisioning
+
+volumes:
+  pg_data:
+  grafana_data:
